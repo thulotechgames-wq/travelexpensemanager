@@ -18,8 +18,10 @@ class Storage {
   final Box<String> _meta;
   final Directory docsDir;
 
-  static Future<Storage> open() async {
-    final dir = await getApplicationDocumentsDirectory();
+  static Future<Storage> open() async => openAt(await getApplicationDocumentsDirectory());
+
+  /// Opens storage inside [dir]; tests pass a temporary folder.
+  static Future<Storage> openAt(Directory dir) async {
     Hive.init('${dir.path}/db');
     final s = Storage._(
       await Hive.openBox<String>('trips'),
@@ -68,6 +70,69 @@ class Storage {
   Future<void> saveCategories(List<SpendCategory> list) =>
       _categories.put('all', jsonEncode(list.map((c) => c.toJson()).toList()));
 
+  // Backup: one self-contained JSON file (receipts embedded) the user keeps in
+  // Files / iCloud Drive / Google Drive. No account or server involved.
+  static const backupFormat = 'expensetracker-backup';
+
+  Future<Map<String, dynamic>> exportAll() async {
+    final receipts = <String, String>{};
+    if (await receiptsDir.exists()) {
+      await for (final f in receiptsDir.list()) {
+        if (f is File) receipts[f.uri.pathSegments.last] = base64Encode(await f.readAsBytes());
+      }
+    }
+    return {
+      'format': backupFormat,
+      'version': 1,
+      'createdAt': DateTime.now().toIso8601String(),
+      'settings': loadSettings().toJson(),
+      'categories': loadCategories().map((c) => c.toJson()).toList(),
+      'trips': loadTrips().map((t) => t.toJson()).toList(),
+      'expenses': loadExpenses().map((e) => e.toJson()).toList(),
+      'receipts': receipts,
+    };
+  }
+
+  /// Throws [FormatException] if [data] is not a backup made by this app.
+  static BackupSummary inspectBackup(Map<String, dynamic> data) {
+    if (data['format'] != backupFormat) throw const FormatException('Not a backup file');
+    return BackupSummary(
+      DateTime.tryParse(data['createdAt'] as String? ?? ''),
+      (data['trips'] as List).length,
+      (data['expenses'] as List).length,
+    );
+  }
+
+  /// Replaces everything on this device with the backup. Parses it fully first,
+  /// so a broken file leaves the current data untouched.
+  Future<void> importAll(Map<String, dynamic> data) async {
+    inspectBackup(data);
+    Map<String, dynamic> m(Object? e) => Map<String, dynamic>.from(e as Map);
+    final settings = AppSettings.fromJson(m(data['settings'])).copyWith(onboarded: true);
+    final cats = (data['categories'] as List).map((e) => SpendCategory.fromJson(m(e))).toList();
+    final trips = (data['trips'] as List).map((e) => Trip.fromJson(m(e))).toList();
+    final expenses = (data['expenses'] as List).map((e) => Expense.fromJson(m(e))).toList();
+    final receipts = {
+      for (final e in m(data['receipts'] ?? const {}).entries)
+        e.key: base64Decode(e.value as String),
+    };
+
+    await wipe();
+    await saveSettings(settings);
+    await saveCategories(cats);
+    for (final t in trips) {
+      await putTrip(t);
+    }
+    for (final e in expenses) {
+      await putExpense(e);
+    }
+    for (final r in receipts.entries) {
+      // Names come from the file; never let one escape the receipts folder.
+      if (r.key.contains('/') || r.key.contains('..')) continue;
+      await receiptFile(r.key).writeAsBytes(r.value);
+    }
+  }
+
   Future<void> wipe() async {
     await _trips.clear();
     await _expenses.clear();
@@ -78,4 +143,11 @@ class Storage {
       await receiptsDir.create(recursive: true);
     }
   }
+}
+
+class BackupSummary {
+  final DateTime? createdAt;
+  final int trips;
+  final int expenses;
+  const BackupSummary(this.createdAt, this.trips, this.expenses);
 }

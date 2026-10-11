@@ -81,6 +81,26 @@ class TripStats {
     return max(0, remaining!) / daysLeft;
   }
 
+  /// Today's fair share of the budget: what was left this morning ÷ days left including today.
+  /// Only for an open trip with a budget and end date, while it is running.
+  double? get todayAllowance {
+    if (budget == null || trip.endDate == null || trip.closed) return null;
+    final today = dateOnly(DateTime.now());
+    final end = dateOnly(trip.endDate!);
+    if (today.isBefore(dateOnly(trip.startDate)) || today.isAfter(end)) return null;
+    return max(0, budget! - (spent - todaySpent)) / daysBetween(today, end);
+  }
+
+  /// How much more can be spent today and still finish on budget. Negative = over today's share.
+  double? get safeToday => todayAllowance == null ? null : todayAllowance! - todaySpent;
+
+  /// Daily share from tomorrow on, given everything spent so far.
+  double? get tomorrowAllowance {
+    if (todayAllowance == null) return null;
+    final daysAfterToday = daysBetween(dateOnly(DateTime.now()), trip.endDate!) - 1;
+    return daysAfterToday <= 0 ? null : max(0, remaining!) / daysAfterToday;
+  }
+
   double get avgPerDay => elapsedDays == 0 ? 0 : spent / elapsedDays;
 
   MapEntry<DateTime, double>? get biggestDay {

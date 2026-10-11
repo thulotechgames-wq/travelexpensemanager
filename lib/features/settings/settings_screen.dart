@@ -1,7 +1,13 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/currencies.dart';
+import '../../core/format.dart';
+import '../../data/storage.dart';
 import '../../core/theme.dart';
 import '../../state/providers.dart';
 import '../../widgets/common.dart';
@@ -27,7 +33,7 @@ class SettingsScreen extends ConsumerWidget {
           _Row(
             icon: Icons.payments_rounded,
             title: 'Currency',
-            subtitle: 'Used for every trip. Amounts are not converted.',
+            subtitle: 'Home currency. Foreign spending converts at the rate you enter.',
             trailing: Text('${cur.symbol}  ${cur.code}',
                 style: const TextStyle(fontWeight: FontWeight.w800)),
             onTap: () async {
@@ -132,6 +138,24 @@ class SettingsScreen extends ConsumerWidget {
             },
           ),
           _Row(
+            icon: Icons.backup_rounded,
+            title: 'Back up all data',
+            subtitle: 'Save one file to Files, iCloud Drive or Google Drive',
+            onTap: () async {
+              try {
+                await ExportService.shareBackup(context, ref.read(storageProvider));
+              } catch (e) {
+                if (context.mounted) toast(context, 'Backup failed: $e');
+              }
+            },
+          ),
+          _Row(
+            icon: Icons.settings_backup_restore_rounded,
+            title: 'Restore from backup',
+            subtitle: 'Move your data to a new phone',
+            onTap: () => _restore(context),
+          ),
+          _Row(
             icon: Icons.delete_forever_rounded,
             title: 'Erase all data',
             subtitle: 'Trips, expenses, receipts and progress',
@@ -146,21 +170,60 @@ class SettingsScreen extends ConsumerWidget {
               final c = ProviderScope.containerOf(context, listen: false);
               Navigator.of(context).popUntil((r) => r.isFirst);
               await c.read(storageProvider).wipe();
-              c.read(categoriesProvider.notifier).reload();
-              c.read(expensesProvider.notifier).reload();
-              c.read(tripsProvider.notifier).reload();
-              c.read(settingsProvider.notifier).reload();
+              _reloadAll(c);
             },
           ),
         ]),
         const SizedBox(height: 32),
-        Center(
-          child: Text('Travel Expenses Manager · v1.0\nWorks offline. Your data stays on this device.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: p.muted, fontSize: 12, height: 1.5)),
-        ),
+        // Center(
+        //   child: Text('Travel Expenses Manager · v1.0\nWorks offline. Your data stays on this device.',
+        //       textAlign: TextAlign.center,
+        //       style: TextStyle(color: p.muted, fontSize: 12, height: 1.5)),
+        // ),
       ]),
     );
+  }
+}
+
+void _reloadAll(ProviderContainer c) {
+  c.read(categoriesProvider.notifier).reload();
+  c.read(expensesProvider.notifier).reload();
+  c.read(tripsProvider.notifier).reload();
+  c.read(settingsProvider.notifier).reload();
+}
+
+Future<void> _restore(BuildContext context) async {
+  final Map<String, dynamic> data;
+  final BackupSummary info;
+  try {
+    final picked = await FilePicker.platform.pickFiles();
+    final path = picked?.files.single.path;
+    if (path == null) return;
+    data = Map<String, dynamic>.from(jsonDecode(await File(path).readAsString()) as Map);
+    info = Storage.inspectBackup(data);
+  } catch (_) {
+    if (context.mounted) toast(context, 'That file is not a backup from this app');
+    return;
+  }
+  if (!context.mounted) return;
+  final ok = await confirm(context,
+      title: 'Restore backup?',
+      message: '${info.createdAt == null ? 'This backup' : 'Backup from ${fmtShortYear(info.createdAt!)}'} '
+          'has ${info.trips} trips and ${info.expenses} expenses. '
+          'Everything currently on this phone will be replaced.',
+      ok: 'Restore');
+  if (!ok || !context.mounted) return;
+  final c = ProviderScope.containerOf(context, listen: false);
+  try {
+    await c.read(storageProvider).importAll(data);
+  } catch (_) {
+    if (context.mounted) toast(context, 'Could not restore that backup');
+    return;
+  }
+  _reloadAll(c);
+  if (context.mounted) {
+    toast(context, 'Restored ${info.trips} trips and ${info.expenses} expenses');
+    Navigator.of(context).popUntil((r) => r.isFirst);
   }
 }
 

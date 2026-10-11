@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/currencies.dart';
 import '../../core/format.dart';
 import '../../core/theme.dart';
 import '../../data/models.dart';
@@ -76,6 +77,14 @@ class ExpenseDetailSheet extends ConsumerWidget {
           ]),
           const SizedBox(height: 16),
           Text(money.exact(exp.amount), style: context.tt.displayMedium),
+          if (exp.isForeign) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Paid ${Money(currencyFor(exp.origCurrency!)).exact(exp.origAmount!)} · '
+              '1 ${exp.origCurrency} = ${exp.rate!.toStringAsFixed(exp.rate! >= 100 ? 2 : 4)} ${money.c.code}',
+              style: TextStyle(color: p.muted, fontWeight: FontWeight.w700),
+            ),
+          ],
           const SizedBox(height: 16),
           for (final r in rows)
             Padding(

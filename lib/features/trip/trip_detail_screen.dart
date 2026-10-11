@@ -171,8 +171,12 @@ class _Header extends StatelessWidget {
         ? 'Day ${stats.elapsedDays.clamp(0, stats.totalDays!)} of ${stats.totalDays}'
         : '${stats.elapsedDays} days';
 
+    final safe = stats.safeToday;
     final chips = <(String, String)>[
-      if (stats.leftPerDay != null) ('Left / day', money.compact(stats.leftPerDay!)),
+      if (safe != null)
+        (safe >= 0 ? 'Safe today' : 'Over today', money.compact(safe.abs()))
+      else if (stats.leftPerDay != null)
+        ('Left / day', money.compact(stats.leftPerDay!)),
       if (stats.dailyBudget != null && !trip.closed) ('Today', money.compact(stats.todaySpent)),
       ('Avg / day', money.compact(stats.avgPerDay)),
       if (stats.leftPerDay == null) ('Expenses', '${stats.expenses.length}'),
@@ -221,7 +225,7 @@ class _Header extends StatelessWidget {
                           fontSize: 18,
                           fontWeight: FontWeight.w800,
                           fontFeatures: tabular,
-                          color: i == 0 ? p.accent : p.ink,
+                          color: i == 0 ? (safe != null && safe < 0 ? p.danger : p.accent) : p.ink,
                         )),
                   ),
                   Text(chips[i].$1,

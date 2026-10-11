@@ -5,7 +5,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../../core/currencies.dart';
 import '../../core/format.dart';
+import '../../core/receipt_scanner.dart';
 import '../../core/theme.dart';
 import '../../data/models.dart';
 import '../../data/storage.dart';
@@ -13,6 +15,7 @@ import '../../state/providers.dart';
 import '../../state/stats.dart';
 import '../../widgets/common.dart';
 import '../badges/badges_screen.dart';
+import '../settings/currency_picker.dart';
 
 /// Opens the calculator-style add sheet. After saving it runs budget alerts,
 /// badge checks and a tiny "saved" confirmation.
@@ -43,12 +46,17 @@ Future<void> showQuickAdd(BuildContext context, WidgetRef ref, String tripId,
       buzz(ref, Buzz.medium);
       toast(context, 'Today is over your ${money(daily)} daily target');
     } else if (edit == null) {
+      final safe = after.safeToday;
       final left = after.leftPerDay;
       toast(
         context,
-        left != null
-            ? 'Added ${money(saved.amount)} · ${money(left)}/day left'
-            : 'Added ${money(saved.amount)} · ${money(after.spent)} total',
+        safe != null && isToday
+            ? safe >= 0
+                ? 'Added ${money(saved.amount)} · ${money(safe)} still safe today'
+                : 'Added ${money(saved.amount)} · ${money(-safe)} over today\'s share'
+            : left != null
+                ? 'Added ${money(saved.amount)} · ${money(left)}/day left'
+                : 'Added ${money(saved.amount)} · ${money(after.spent)} total',
       );
     }
   }
@@ -72,10 +80,15 @@ class _QuickAddSheetState extends ConsumerState<QuickAddSheet> {
   late Set<String> _split;
   late final TextEditingController _title;
   late final TextEditingController _note;
+  late final TextEditingController _rate;
+
+  /// Currency the amount is typed in. Differs from the home currency for foreign spending.
+  late Currency _cur;
   String? _photo;
   String? _pickedPhoto; // photo picked in this session (deleted if not saved)
   bool _saved = false;
   bool _showNote = false;
+  bool _scanning = false;
   int _shake = 0;
 
   late final Storage _db;
@@ -87,10 +100,13 @@ class _QuickAddSheetState extends ConsumerState<QuickAddSheet> {
     final e = widget.edit;
     final trip = ref.read(tripProvider(widget.tripId))!;
     final cats = ref.read(categoriesProvider);
+    final home = ref.read(currencyProvider);
     if (e != null) {
-      _expr = e.amount == e.amount.roundToDouble()
-          ? e.amount.toInt().toString()
-          : e.amount.toStringAsFixed(ref.read(currencyProvider).decimals);
+      _cur = e.isForeign ? currencyFor(e.origCurrency!) : home;
+      final typed = e.isForeign ? e.origAmount! : e.amount;
+      _expr = typed == typed.roundToDouble()
+          ? typed.toInt().toString()
+          : typed.toStringAsFixed(_cur.decimals);
       _cat = e.categoryId;
       _date = e.date;
       _paidBy = e.paidBy;
@@ -105,6 +121,10 @@ class _QuickAddSheetState extends ConsumerState<QuickAddSheet> {
       _cat = recent.isNotEmpty && cats.any((c) => c.id == recent.first.categoryId)
           ? recent.first.categoryId
           : cats.first.id;
+      // Keep using the currency of the last expense: abroad, most spending is local.
+      _cur = recent.isNotEmpty && recent.first.isForeign
+          ? currencyFor(recent.first.origCurrency!)
+          : home;
       final now = DateTime.now();
       _date = now;
       // For trips in the past, default the date into the trip range.
@@ -116,6 +136,31 @@ class _QuickAddSheetState extends ConsumerState<QuickAddSheet> {
     }
     _title = TextEditingController(text: e?.title ?? '');
     _note = TextEditingController(text: e?.note ?? '');
+    final rate = e != null && e.isForeign ? e.rate : ref.read(settingsProvider).rates[_cur.code];
+    _rate = TextEditingController(text: rate == null ? '' : _fmtRate(rate));
+  }
+
+  static String _fmtRate(double r) {
+    final s = r.toStringAsFixed(r >= 100 ? 2 : (r >= 1 ? 4 : 6));
+    return s.contains('.') ? s.replaceFirst(RegExp(r'\.?0+$'), '') : s;
+  }
+
+  bool get _foreign => _cur.code != ref.read(currencyProvider).code;
+  double? get _rateValue {
+    final v = double.tryParse(_rate.text.replaceAll(',', '').trim());
+    return v == null || v <= 0 ? null : v;
+  }
+
+  Future<void> _pickCurrency() async {
+    final code = await Navigator.push<String>(context,
+        MaterialPageRoute(builder: (_) => CurrencyPickerScreen(initial: _cur.code)));
+    if (code == null || !mounted || code == _cur.code) return;
+    final rate = ref.read(settingsProvider).rates[code];
+    setState(() {
+      _cur = currencyFor(code);
+      if (_cur.decimals == 0) _expr = _expr.replaceAll(RegExp(r'\.\d*'), '');
+      _rate.text = rate == null ? '' : _fmtRate(rate);
+    });
   }
 
   @override
@@ -129,6 +174,7 @@ class _QuickAddSheetState extends ConsumerState<QuickAddSheet> {
     }
     _title.dispose();
     _note.dispose();
+    _rate.dispose();
     super.dispose();
   }
 
@@ -139,7 +185,7 @@ class _QuickAddSheetState extends ConsumerState<QuickAddSheet> {
   }
 
   void _key(String k) {
-    final decimals = ref.read(currencyProvider).decimals;
+    final decimals = _cur.decimals;
     final seg = _segment;
     setState(() {
       switch (k) {
@@ -210,8 +256,47 @@ class _QuickAddSheetState extends ConsumerState<QuickAddSheet> {
         _photo = name;
       });
       buzz(ref, Buzz.light);
+      await _scan(file.path);
     } catch (_) {
       if (mounted) toast(context, 'Could not open ${src == ImageSource.camera ? 'camera' : 'photos'}');
+    }
+  }
+
+  /// Reads the receipt on the device and fills in only the fields the user left empty.
+  Future<void> _scan(String path) async {
+    setState(() => _scanning = true);
+    final g = await ReceiptScanner.scan(path);
+    if (!mounted) return;
+    final filled = <String>[];
+    // Only trust a receipt date that falls inside the trip; OCR can misread dates.
+    final trip = ref.read(tripProvider(widget.tripId))!;
+    final d = g.date;
+    final dateFits = d != null &&
+        !d.isBefore(dateOnly(trip.startDate)) &&
+        (trip.endDate == null || !d.isAfter(dateOnly(trip.endDate!)));
+    setState(() {
+      _scanning = false;
+      if (g.total != null && _expr.isEmpty) {
+        final v = g.total!;
+        _expr = v == v.roundToDouble()
+            ? v.toInt().toString()
+            : v.toStringAsFixed(_cur.decimals == 0 ? 0 : 2);
+        filled.add(Money(_cur)(v));
+      }
+      if (g.merchant != null && _title.text.trim().isEmpty) {
+        _title.text = g.merchant!;
+        filled.add(g.merchant!);
+      }
+      if (dateFits && widget.edit == null && dayKey(d) != dayKey(_date)) {
+        _date = DateTime(d.year, d.month, d.day, _date.hour, _date.minute);
+        filled.add(fmtDay(_date));
+      }
+    });
+    if (filled.isNotEmpty) {
+      buzz(ref, Buzz.success);
+      toast(context, 'Read from receipt: ${filled.join(' · ')}');
+    } else if (g.isEmpty) {
+      toast(context, 'Receipt saved. Could not read it, so type the amount.');
     }
   }
 
@@ -225,7 +310,8 @@ class _QuickAddSheetState extends ConsumerState<QuickAddSheet> {
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             ListTile(
               leading: Icon(Icons.photo_camera_rounded, color: p.ink),
-              title: const Text('Take photo'),
+              title: const Text('Scan receipt'),
+              subtitle: const Text('Fills in amount, shop and date'),
               onTap: () {
                 Navigator.pop(ctx);
                 _pickPhoto(ImageSource.camera);
@@ -270,12 +356,23 @@ class _QuickAddSheetState extends ConsumerState<QuickAddSheet> {
   }
 
   Future<void> _save() async {
-    final amount = evalExpr(_expr);
-    if (amount <= 0) {
+    final typed = evalExpr(_expr);
+    if (typed <= 0) {
       buzz(ref, Buzz.heavy);
       setState(() => _shake++);
       return;
     }
+    final foreign = _foreign;
+    final rate = _rateValue;
+    if (foreign && rate == null) {
+      buzz(ref, Buzz.heavy);
+      toast(context, 'Enter the rate you got for ${_cur.code}');
+      return;
+    }
+    final home = ref.read(currencyProvider);
+    final amount =
+        foreign ? double.parse((typed * rate!).toStringAsFixed(home.decimals)) : typed;
+    if (foreign) await ref.read(settingsProvider.notifier).rememberRate(_cur.code, rate!);
     final trip = ref.read(tripProvider(widget.tripId))!;
     final cat = ref.read(categoryMapProvider)[_cat];
     final allIds = trip.members.map((m) => m.id).toSet();
@@ -294,6 +391,8 @@ class _QuickAddSheetState extends ConsumerState<QuickAddSheet> {
             splitWith: split,
             note: _note.text.trim(),
             photo: _photo,
+            origCurrency: foreign ? _cur.code : null,
+            origAmount: foreign ? typed : null,
             createdAt: DateTime.now(),
           )
         : e.copyWith(
@@ -306,6 +405,9 @@ class _QuickAddSheetState extends ConsumerState<QuickAddSheet> {
             note: _note.text.trim(),
             photo: _photo,
             clearPhoto: _photo == null,
+            origCurrency: foreign ? _cur.code : null,
+            origAmount: foreign ? typed : null,
+            clearForeign: !foreign,
           );
     // Clean up a replaced/removed receipt when editing.
     if (e?.photo != null && e!.photo != _photo) {
@@ -323,8 +425,11 @@ class _QuickAddSheetState extends ConsumerState<QuickAddSheet> {
     final trip = ref.watch(tripProvider(widget.tripId));
     if (trip == null) return const SizedBox.shrink();
     final cats = ref.watch(categoriesProvider);
-    final cur = ref.watch(currencyProvider);
+    final home = ref.watch(currencyProvider);
+    final cur = _cur;
+    final foreign = cur.code != home.code;
     final money = ref.watch(moneyProvider);
+    final typedMoney = foreign ? Money(cur) : money;
     final hasOp = _expr.contains('+') || _expr.contains('−');
     final value = evalExpr(_expr);
     final today = dayKey(_date) == dayKey(DateTime.now());
@@ -356,6 +461,11 @@ class _QuickAddSheetState extends ConsumerState<QuickAddSheet> {
                             letterSpacing: 1.2,
                             fontSize: 12)),
                   ),
+                  Pill(cur.code,
+                      icon: Icons.currency_exchange_rounded,
+                      selected: foreign,
+                      onTap: _pickCurrency),
+                  const SizedBox(width: 8),
                   Pill(today ? 'Today' : fmtDay(_date),
                       icon: Icons.calendar_today_rounded, onTap: _pickDate),
                 ]),
@@ -393,12 +503,24 @@ class _QuickAddSheetState extends ConsumerState<QuickAddSheet> {
                   child: hasOp
                       ? Padding(
                           padding: const EdgeInsets.only(top: 2),
-                          child: Text('= ${money.exact(value)}',
+                          child: Text('= ${typedMoney.exact(value)}',
                               style: TextStyle(
                                   color: p.muted, fontWeight: FontWeight.w700, fontSize: 16)),
                         )
                       : const SizedBox(width: double.infinity),
                 ),
+                if (foreign) ...[
+                  const SizedBox(height: 8),
+                  _RateRow(
+                    from: cur,
+                    to: home,
+                    controller: _rate,
+                    converted: _rateValue == null || value <= 0
+                        ? null
+                        : money.exact(value * _rateValue!),
+                    onChanged: () => setState(() {}),
+                  ),
+                ],
                 const SizedBox(height: 12),
                 // Categories
                 SizedBox(
@@ -440,8 +562,17 @@ class _QuickAddSheetState extends ConsumerState<QuickAddSheet> {
                     onTap: () => setState(() => _showNote = !_showNote),
                   ),
                   const SizedBox(width: 8),
-                  _photo == null
-                      ? _IconToggle(icon: Icons.receipt_long_rounded, onTap: _photoMenu)
+                  _scanning
+                      ? Container(
+                          width: 48,
+                          height: 48,
+                          padding: const EdgeInsets.all(14),
+                          decoration:
+                              BoxDecoration(color: p.card, borderRadius: BorderRadius.circular(14)),
+                          child: CircularProgressIndicator(strokeWidth: 2.5, color: p.ink),
+                        )
+                      : _photo == null
+                      ? _IconToggle(icon: Icons.document_scanner_rounded, onTap: _photoMenu)
                       : GestureDetector(
                           onTap: _photoMenu,
                           child: ClipRRect(
@@ -501,6 +632,70 @@ class _QuickAddSheetState extends ConsumerState<QuickAddSheet> {
           ),
         ]),
       ),
+    );
+  }
+}
+
+/// "1 EUR = [ 145.2 ] NPR  ≈ Rs 1,800" — the rate the user actually got, not a market rate.
+class _RateRow extends StatelessWidget {
+  final Currency from;
+  final Currency to;
+  final TextEditingController controller;
+  final String? converted;
+  final VoidCallback onChanged;
+  const _RateRow({
+    required this.from,
+    required this.to,
+    required this.controller,
+    required this.converted,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.p;
+    final label = TextStyle(color: p.muted, fontWeight: FontWeight.w700, fontSize: 14);
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 6, 14, 6),
+      decoration: BoxDecoration(color: p.card, borderRadius: BorderRadius.circular(14)),
+      child: Row(children: [
+        Text('1 ${from.code} =', style: label),
+        const SizedBox(width: 8),
+        SizedBox(
+          width: 96,
+          child: TextField(
+            controller: controller,
+            onChanged: (_) => onChanged(),
+            onTapOutside: (_) => FocusScope.of(context).unfocus(),
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            style: const TextStyle(fontWeight: FontWeight.w800, fontFeatures: tabular),
+            decoration: const InputDecoration(
+              isDense: true,
+              hintText: 'Rate',
+              filled: false,
+              border: InputBorder.none,
+              enabledBorder: InputBorder.none,
+              focusedBorder: InputBorder.none,
+              contentPadding: EdgeInsets.symmetric(vertical: 8),
+            ),
+          ),
+        ),
+        Text(to.code, style: label),
+        const Spacer(),
+        Flexible(
+          flex: 3,
+          child: Text(
+            converted == null ? 'Rate you got' : '≈ $converted',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.right,
+            style: TextStyle(
+                color: converted == null ? p.muted : p.ink,
+                fontWeight: FontWeight.w800,
+                fontSize: 14),
+          ),
+        ),
+      ]),
     );
   }
 }

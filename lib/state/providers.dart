@@ -23,7 +23,9 @@ class SettingsNotifier extends Notifier<AppSettings> {
     await ref.read(storageProvider).saveSettings(s);
   }
 
-  Future<void> setCurrency(String code) => _save(state.copyWith(currency: code));
+  // Saved rates are relative to the home currency, so they no longer apply.
+  Future<void> setCurrency(String code) =>
+      _save(state.copyWith(currency: code, rates: const {}));
   Future<void> finishOnboarding(String code) =>
       _save(state.copyWith(currency: code, onboarded: true));
   Future<void> setThemeMode(ThemeMode m) => _save(state.copyWith(themeMode: m));
@@ -32,6 +34,11 @@ class SettingsNotifier extends Notifier<AppSettings> {
     final k = dayKey(DateTime.now());
     if (state.logDays.contains(k)) return Future.value();
     return _save(state.copyWith(logDays: {...state.logDays, k}));
+  }
+
+  Future<void> rememberRate(String code, double rate) {
+    if (state.rates[code] == rate) return Future.value();
+    return _save(state.copyWith(rates: {...state.rates, code: rate}));
   }
 
   Future<void> markBadgesSeen(Iterable<String> ids) =>

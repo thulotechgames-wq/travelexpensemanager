@@ -90,7 +90,14 @@ class Expense {
   final String id;
   final String tripId;
   final String title;
+
+  /// Always in the home currency, so totals, budgets and splits never mix currencies.
   final double amount;
+
+  /// Set when the expense was paid in another currency: what was actually paid,
+  /// converted into [amount] with the rate the user entered.
+  final String? origCurrency;
+  final double? origAmount;
   final String categoryId;
   final DateTime date;
   final String paidBy;
@@ -115,11 +122,21 @@ class Expense {
     this.splitWith = const [],
     this.note = '',
     this.photo,
+    this.origCurrency,
+    this.origAmount,
   });
+
+  bool get isForeign => origCurrency != null && origAmount != null;
+
+  /// Home-currency units per one unit of [origCurrency].
+  double? get rate => isForeign && origAmount! > 0 ? amount / origAmount! : null;
 
   Expense copyWith({
     String? title,
     double? amount,
+    String? origCurrency,
+    double? origAmount,
+    bool clearForeign = false,
     String? categoryId,
     DateTime? date,
     String? paidBy,
@@ -139,6 +156,8 @@ class Expense {
         splitWith: splitWith ?? this.splitWith,
         note: note ?? this.note,
         photo: clearPhoto ? null : (photo ?? this.photo),
+        origCurrency: clearForeign ? null : (origCurrency ?? this.origCurrency),
+        origAmount: clearForeign ? null : (origAmount ?? this.origAmount),
         createdAt: createdAt,
       );
 
@@ -153,6 +172,8 @@ class Expense {
         'splitWith': splitWith,
         'note': note,
         'photo': photo,
+        'origCurrency': origCurrency,
+        'origAmount': origAmount,
         'createdAt': createdAt.toIso8601String(),
       };
 
@@ -167,6 +188,8 @@ class Expense {
         splitWith: ((j['splitWith'] as List?) ?? []).cast<String>(),
         note: (j['note'] as String?) ?? '',
         photo: j['photo'] as String?,
+        origCurrency: j['origCurrency'] as String?,
+        origAmount: (j['origAmount'] as num?)?.toDouble(),
         createdAt: DateTime.parse(j['createdAt'] as String),
       );
 }
@@ -247,6 +270,10 @@ class AppSettings {
   /// Badge ids the user has already been congratulated for.
   final Set<String> seenBadges;
 
+  /// Last exchange rate the user entered per foreign currency
+  /// (home-currency units per one foreign unit). Works offline.
+  final Map<String, double> rates;
+
   const AppSettings({
     this.onboarded = false,
     this.currency = 'USD',
@@ -254,6 +281,7 @@ class AppSettings {
     this.haptics = true,
     this.logDays = const {},
     this.seenBadges = const {},
+    this.rates = const {},
   });
 
   AppSettings copyWith({
@@ -263,6 +291,7 @@ class AppSettings {
     bool? haptics,
     Set<String>? logDays,
     Set<String>? seenBadges,
+    Map<String, double>? rates,
   }) =>
       AppSettings(
         onboarded: onboarded ?? this.onboarded,
@@ -271,6 +300,7 @@ class AppSettings {
         haptics: haptics ?? this.haptics,
         logDays: logDays ?? this.logDays,
         seenBadges: seenBadges ?? this.seenBadges,
+        rates: rates ?? this.rates,
       );
 
   Map<String, dynamic> toJson() => {
@@ -280,6 +310,7 @@ class AppSettings {
         'haptics': haptics,
         'logDays': logDays.toList(),
         'seenBadges': seenBadges.toList(),
+        'rates': rates,
       };
 
   factory AppSettings.fromJson(Map<String, dynamic> j) => AppSettings(
@@ -290,5 +321,9 @@ class AppSettings {
         haptics: (j['haptics'] as bool?) ?? true,
         logDays: ((j['logDays'] as List?) ?? []).cast<String>().toSet(),
         seenBadges: ((j['seenBadges'] as List?) ?? []).cast<String>().toSet(),
+        rates: {
+          for (final e in ((j['rates'] as Map?) ?? {}).entries)
+            e.key as String: (e.value as num).toDouble(),
+        },
       );
 }

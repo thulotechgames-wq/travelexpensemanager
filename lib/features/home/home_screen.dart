@@ -18,7 +18,6 @@ class HomeScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final p = context.p;
     final trips = ref.watch(tripsProvider);
     final stats = ref.watch(allStatsProvider);
     final money = ref.watch(moneyProvider);
@@ -51,15 +50,26 @@ class HomeScreen extends ConsumerWidget {
                       context, MaterialPageRoute(builder: (_) => const BadgesScreen())),
                 ),
                 _RoundBtn(
-                  icon: Icons.tune_rounded,
+                  icon: Icons.settings, // IconData(0xe57f, fontFamily: 'MaterialIcons')
                   onTap: () => Navigator.push(
                       context, MaterialPageRoute(builder: (_) => const SettingsScreen())),
                 ),
               ]),
             ),
           ),
+          for (final t in active)
+            if (stats[t.id]!.safeToday != null)
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
+                sliver: SliverToBoxAdapter(child: SafeToSpendCard(stats: stats[t.id]!)),
+              ),
+          if (active.isNotEmpty && !active.any((t) => stats[t.id]!.safeToday != null))
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
+              sliver: SliverToBoxAdapter(child: _SafeToSpendHint(trip: active.first)),
+            ),
           const SliverPadding(
-            padding: EdgeInsets.fromLTRB(20, 20, 20, 0),
+            padding: EdgeInsets.fromLTRB(20, 12, 20, 0),
             sliver: SliverToBoxAdapter(child: StreakCard()),
           ),
           if (trips.isNotEmpty)
@@ -193,6 +203,117 @@ class _MiniStat extends StatelessWidget {
         ),
         const SizedBox(height: 2),
         Text(label, style: TextStyle(color: p.muted, fontSize: 12, fontWeight: FontWeight.w600)),
+      ]),
+    );
+  }
+}
+
+/// The app's core answer: how much more you can spend today and still finish on budget.
+class SafeToSpendCard extends ConsumerWidget {
+  final TripStats stats;
+  const SafeToSpendCard({super.key, required this.stats});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final p = context.p;
+    final money = ref.watch(moneyProvider);
+    final safe = stats.safeToday!;
+    final allowance = stats.todayAllowance!;
+    final over = safe < 0;
+    final tomorrow = stats.tomorrowAllowance;
+    final msg = over
+        ? tomorrow != null
+            ? 'Over today\'s share by ${money(-safe)}. Tomorrow drops to ${money(tomorrow)}.'
+            : 'Over today\'s share by ${money(-safe)}.'
+        : stats.todaySpent == 0
+            ? 'Nothing spent yet today. Your share is ${money(allowance)}.'
+            : '${money(stats.todaySpent)} spent of today\'s ${money(allowance)}.';
+
+    return Pressable(
+      onTap: () {
+        buzz(ref, Buzz.select);
+        Navigator.push(context,
+            MaterialPageRoute(builder: (_) => TripDetailScreen(tripId: stats.trip.id)));
+      },
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(20, 18, 16, 18),
+        decoration: BoxDecoration(color: p.ink, borderRadius: BorderRadius.circular(24)),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Expanded(
+              child: Text(
+                'SAFE TO SPEND TODAY · ${stats.trip.title.toUpperCase()}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    color: p.bg.withValues(alpha: 0.6),
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 1.1),
+              ),
+            ),
+            Pressable(
+              onTap: () {
+                buzz(ref, Buzz.medium);
+                showQuickAdd(context, ref, stats.trip.id);
+              },
+              child: Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(color: p.accent, shape: BoxShape.circle),
+                child: Icon(Icons.add_rounded, color: p.onAccent),
+              ),
+            ),
+          ]),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: CountUp(
+              value: over ? 0 : safe,
+              format: money.call,
+              style: context.tt.displayMedium?.copyWith(color: over ? p.danger : p.accent),
+            ),
+          ),
+          const SizedBox(height: 10),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: LinearProgressIndicator(
+              value: allowance <= 0 ? 1 : (stats.todaySpent / allowance).clamp(0, 1).toDouble(),
+              minHeight: 8,
+              backgroundColor: p.bg.withValues(alpha: 0.15),
+              color: over ? p.danger : p.accent,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Text(msg, style: TextStyle(color: p.bg.withValues(alpha: 0.75), fontSize: 13, height: 1.35)),
+        ]),
+      ),
+    );
+  }
+}
+
+class _SafeToSpendHint extends ConsumerWidget {
+  final Trip trip;
+  const _SafeToSpendHint({required this.trip});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final p = context.p;
+    final started = !dateOnly(DateTime.now()).isBefore(dateOnly(trip.startDate));
+    return Tile(
+      onTap: started ? () => showTripForm(context, trip: trip) : null,
+      padding: const EdgeInsets.all(18),
+      child: Row(children: [
+        Icon(Icons.savings_rounded, color: p.ink, size: 28),
+        const SizedBox(width: 14),
+        Expanded(
+          child: Text(
+            started
+                ? 'Add a budget and end date to ${trip.title} to see how much you can safely spend each day.'
+                : '${trip.title} starts ${fmtDay(trip.startDate)}. Your daily safe-to-spend appears here once it begins.',
+            style: TextStyle(color: p.muted, fontSize: 13, height: 1.4, fontWeight: FontWeight.w600),
+          ),
+        ),
       ]),
     );
   }

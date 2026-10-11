@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/widgets.dart';
@@ -10,6 +11,7 @@ import 'package:share_plus/share_plus.dart';
 import '../../core/currencies.dart';
 import '../../core/format.dart';
 import '../../data/models.dart';
+import '../../data/storage.dart';
 import '../../state/stats.dart';
 
 class ExportService {
@@ -68,11 +70,13 @@ class ExportService {
             : e.splitWith.map(t.memberName).join('; '),
         e.note,
         e.photo == null ? '' : 'yes',
+        e.isForeign ? e.origAmount!.toStringAsFixed(currencyFor(e.origCurrency!).decimals) : '',
+        e.origCurrency ?? '',
       ];
 
   static const _header = [
     'Date', 'Time', 'Trip', 'Title', 'Category', 'Amount', 'Currency', 'Paid by', 'Split with',
-    'Note', 'Receipt'
+    'Note', 'Receipt', 'Paid amount', 'Paid currency'
   ];
 
   static Future<void> shareCsv(
@@ -102,6 +106,17 @@ class ExportService {
     await f.writeAsString(_csv(rows));
     if (!context.mounted) return;
     await _share(context, f, 'text/csv', 'All travel expenses');
+  }
+
+  // ─── Backup ────────────────────────────────────────────────────────────────
+  /// Shares a full backup file; the user saves it to Files, iCloud Drive, Drive or email.
+  static Future<void> shareBackup(BuildContext context, Storage db) async {
+    final data = await db.exportAll();
+    final dir = await getTemporaryDirectory();
+    final f = File('${dir.path}/expenses-backup-${DateFormat('yyyy-MM-dd').format(DateTime.now())}.json');
+    await f.writeAsString(jsonEncode(data));
+    if (!context.mounted) return;
+    await _share(context, f, 'application/json', 'Expenses backup');
   }
 
   // ─── PDF ───────────────────────────────────────────────────────────────────
@@ -285,7 +300,11 @@ class ExportService {
             for (final e in s.expenses.reversed)
               [
                 DateFormat('d MMM, HH:mm').format(e.date),
-                _a(e.note.isEmpty ? e.title : '${e.title}\n${e.note}'),
+                _a([
+                  e.title,
+                  if (e.isForeign) 'Paid ${e.origAmount!.toStringAsFixed(currencyFor(e.origCurrency!).decimals)} ${e.origCurrency}',
+                  if (e.note.isNotEmpty) e.note,
+                ].where((x) => x.isNotEmpty).join('\n')),
                 _a(cats[e.categoryId]?.name ?? 'Other'),
                 if (t.isGroup) _a(t.memberName(e.paidBy)),
                 m(e.amount),

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/currencies.dart';
 import '../../core/format.dart';
 import '../../core/theme.dart';
 import '../../data/models.dart';
@@ -245,9 +246,15 @@ class ExpenseRow extends ConsumerWidget {
               padding: const EdgeInsets.only(right: 8),
               child: Icon(Icons.notes_rounded, size: 18, color: p.muted),
             ),
-          Text(money(expense.amount),
-              style: const TextStyle(
-                  fontWeight: FontWeight.w800, fontSize: 16, fontFeatures: tabular)),
+          Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            Text(money(expense.amount),
+                style: const TextStyle(
+                    fontWeight: FontWeight.w800, fontSize: 16, fontFeatures: tabular)),
+            if (expense.isForeign)
+              Text(Money(currencyFor(expense.origCurrency!))(expense.origAmount!),
+                  style: TextStyle(
+                      color: p.muted, fontSize: 12, fontWeight: FontWeight.w600, fontFeatures: tabular)),
+          ]),
         ]),
       ),
     );

@@ -21,14 +21,14 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
 
   static const _intro = [
     (
-      Icons.luggage_rounded,
-      'Every coin,\nevery trip.',
-      'Create a trip, log spending in three taps, and always know what\'s left.'
+      Icons.savings_rounded,
+      'Know what\'s safe\nto spend today.',
+      'Set a budget and dates. Every morning you get one number: how much you can spend today and still finish on budget.'
     ),
     (
-      Icons.donut_large_rounded,
-      'See where\nit all went.',
-      'Clean charts by category and day, group splits, and a report you can share.'
+      Icons.document_scanner_rounded,
+      'Snap a receipt.\nDone.',
+      'Amount, shop and date are read on your phone. Pay in any currency at the rate you actually got. No account, works offline.'
     ),
   ];
 
@@ -84,7 +84,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                     child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                       Text('Pick your\ncurrency.', style: context.tt.displayMedium),
                       const SizedBox(height: 12),
-                      Text('All amounts use this. You can change it any time in Settings.',
+                      Text('Your home currency. Spending in other currencies is converted into it.',
                           style: TextStyle(color: p.muted, fontSize: 16, height: 1.4)),
                     ]),
                   ),
@@ -133,16 +133,18 @@ class _IntroPage extends StatelessWidget {
       padding: const EdgeInsets.all(24),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         const Spacer(),
-        TweenAnimationBuilder<double>(
-          tween: Tween(begin: 0.6, end: 1),
-          duration: const Duration(milliseconds: 700),
-          curve: Curves.elasticOut,
-          builder: (context, s, child) => Transform.scale(scale: s, child: child),
-          child: Container(
-            width: 132,
-            height: 132,
-            decoration: BoxDecoration(color: p.accent, borderRadius: BorderRadius.circular(40)),
-            child: Icon(icon, size: 64, color: p.onAccent),
+        Center(
+          child: TweenAnimationBuilder<double>(
+            tween: Tween(begin: 0.6, end: 1),
+            duration: const Duration(milliseconds: 700),
+            curve: Curves.elasticOut,
+            builder: (context, s, child) => Transform.scale(scale: s, child: child),
+            child: Container(
+              width: 132,
+              height: 132,
+              decoration: BoxDecoration(color: p.accent, borderRadius: BorderRadius.circular(40)),
+              child: Icon(icon, size: 64, color: p.onAccent),
+            ),
           ),
         ),
         const Spacer(),
